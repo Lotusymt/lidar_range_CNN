@@ -1,15 +1,78 @@
 // src/LoopClosureNet.cpp
-#include "slam/LoopClosureNet.hpp"
+#include "LoopClosureNet.hpp"
 #include <stdexcept>
-#include <cstring>   // std::memcpy
+#include <cstring>   // std::memcpy, strlen
+#include <vector>   // for path_buffer
+#include <filesystem>
+#include <torch/script.h>
+#include <c10/util/Exception.h>  // for c10::Error
 
 namespace slam {
 
 LoopClosureNet::LoopClosureNet(const std::string& model_path)
 {
     // Load TorchScript module
-    module_ = torch::jit::load(model_path);
+    // Verify file exists first
+    if (!std::filesystem::exists(model_path)) {
+        // Try to resolve as absolute path
+        std::filesystem::path fs_path(model_path);
+        if (fs_path.is_relative()) {
+            fs_path = std::filesystem::absolute(fs_path);
+        }
+        fs_path = fs_path.lexically_normal();
+        
+        if (!std::filesystem::exists(fs_path)) {
+            throw std::runtime_error("Model file does not exist: " + model_path);
+        }
+    }
+    
+    // Try using the path directly first (as received)
+    std::cout << "[LoopClosureNet] Attempting to load model..." << std::endl;
+    std::cout << "[LoopClosureNet] Path: " << model_path << std::endl;
+    std::cout << "[LoopClosureNet] Path length: " << model_path.length() << std::endl;
+    std::cout.flush();
+    
+    // Verify file can be opened with standard I/O first
+    {
+        std::ifstream test_file(model_path, std::ios::binary);
+        if (!test_file.good()) {
+            throw std::runtime_error("Cannot open model file for reading: " + model_path);
+        }
+        test_file.close();
+        std::cout << "[LoopClosureNet] File verified readable with standard I/O" << std::endl;
+    }
+    
+    // Load TorchScript module
+    // WORKAROUND for Windows: torch::jit::load() has path encoding issues
+    // Create a clean, null-terminated C-string to ensure proper encoding
+    
+    // Convert to absolute path and normalize
+    std::filesystem::path fs_path(model_path);
+    if (fs_path.is_relative()) {
+        fs_path = std::filesystem::absolute(fs_path);
+    }
+    fs_path = fs_path.lexically_normal();
+    
+    // Get native path string (backslashes on Windows)
+    std::string native_path = fs_path.string();
+    
+    // Ensure string is properly null-terminated and create a fresh copy
+    std::vector<char> path_buffer(native_path.begin(), native_path.end());
+    path_buffer.push_back('\0');  // Explicit null terminator
+    
+    // Create string from buffer to ensure clean encoding
+    std::string clean_path(path_buffer.data());
+    
+    std::cout << "[LoopClosureNet] Loading with clean path: " << clean_path << std::endl;
+    std::cout << "[LoopClosureNet] Path size: " << clean_path.size() << ", c_str size: " << strlen(clean_path.c_str()) << std::endl;
+    std::cout.flush();
+    
+    // Try loading with the clean path
+    module_ = torch::jit::load(clean_path);
     module_.eval();  // inference mode
+    
+    std::cout << "[LoopClosureNet] Model loaded successfully!" << std::endl;
+    std::cout.flush();
 }
 
 // Helper: check shapes match

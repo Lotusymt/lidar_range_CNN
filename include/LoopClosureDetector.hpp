@@ -1,8 +1,8 @@
 #pragma once
 
-#include "slam/Types.hpp"
-#include "slam/LoopClosureNet.hpp"
-#include "slam/RangeImageProjector.hpp"
+#include "Types.hpp"
+#include "LoopClosureNet.hpp"
+#include "RangeImageProjector.hpp"
 #include <vector>
 #include <memory>
 
@@ -26,22 +26,28 @@ public:
      *
      * @param model_path Path to the TorchScript model file (.pt)
      * @param probability_threshold Minimum probability to accept a loop closure (default: 0.5)
-     * @param keyframe_interval Add a keyframe every N frames (default: 10)
+     * @param keyframe_interval Minimum frames between keyframes (fallback, default: 10)
      * @param min_separation Minimum frames between current and candidate keyframe (default: 50)
      * @param max_candidates Maximum number of candidates to check per detection (default: 20)
+     * @param use_motion_based If true, use motion-based keyframe selection (default: true)
+     * @param min_translation Minimum translation distance (meters) to create keyframe (default: 1.0)
+     * @param min_rotation Minimum rotation angle (radians) to create keyframe (default: 0.2)
      */
     LoopClosureDetector(const std::string& model_path,
                        float probability_threshold = 0.5f,
                        int keyframe_interval = 10,
                        int min_separation = 50,
-                       int max_candidates = 20);
+                       int max_candidates = 20,
+                       bool use_motion_based = true,
+                       double min_translation = 1.0,
+                       double min_rotation = 0.2);
 
     /**
      * @brief Process a new frame and check for loop closures.
      *
      * This method:
      * 1. Projects the LiDAR scan to a range image
-     * 2. Decides if this should be a keyframe
+     * 2. Decides if this should be a keyframe (motion-based or interval-based)
      * 3. If it's a keyframe, checks against past keyframes for loop closures
      *
      * @param scan Current LiDAR scan
@@ -76,6 +82,14 @@ public:
      */
     void clearKeyframes() { keyframes_.clear(); }
 
+    /**
+     * @brief Get all keyframe information for map building.
+     * 
+     * Returns keyframes with their frame IDs and node indices.
+     * The poses should be retrieved from the pose graph using node_index.
+     */
+    std::vector<std::pair<int, int>> getKeyframeIndices() const;
+
 private:
     /// @brief Neural network for loop closure detection
     std::unique_ptr<LoopClosureNet> net_;
@@ -83,7 +97,7 @@ private:
     /// @brief Minimum probability to accept a loop closure
     float probability_threshold_;
 
-    /// @brief Add a keyframe every N frames
+    /// @brief Minimum frames between keyframes (fallback/constraint)
     int keyframe_interval_;
 
     /// @brief Minimum frames between current and candidate
@@ -91,6 +105,21 @@ private:
 
     /// @brief Maximum candidates to check per detection
     int max_candidates_;
+
+    /// @brief Use motion-based keyframe selection (if true) or interval-based (if false)
+    bool use_motion_based_;
+
+    /// @brief Minimum translation distance (meters) to create keyframe
+    double min_translation_;
+
+    /// @brief Minimum rotation angle (radians) to create keyframe
+    double min_rotation_;
+
+    /// @brief Last keyframe pose (for motion-based selection)
+    Pose3D last_keyframe_pose_;
+
+    /// @brief Last keyframe frame ID
+    int last_keyframe_frame_id_;
 
     /// @brief Stored keyframe information
     struct Keyframe {

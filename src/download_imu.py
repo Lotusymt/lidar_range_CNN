@@ -2,18 +2,19 @@ import os
 import zipfile
 
 # ---------- CONFIGURE THESE PATHS ----------
-ZIP_ROOT     = r"E:\\"           # folder where your *_sync.zip files are stored
+# Can be set via environment variables or edit defaults here
+ZIP_ROOT     = os.getenv("KITTI_ZIP_ROOT", r"E:\\")           # folder where your *_sync.zip files are stored
 # example: E:\2011_10_03_drive_0027_sync.zip
 
-RAW_ROOT     = r"E:\kitti_raw"  # where we will unzip the raw *_sync folders
+RAW_ROOT     = os.getenv("KITTI_RAW_ROOT", r"E:\kitti_raw")  # where we will unzip the raw *_sync folders
 
-ODOM_ROOT    = r"D:\kitti_lidar"  # odometry lidar root
+ODOM_ROOT    = os.getenv("KITTI_LIDAR_ROOT", r"D:\kitti_lidar")  # odometry lidar root
 # expected layout:
 # D:\kitti_lidar\00\velodyne\000000.bin
 # D:\kitti_lidar\01\velodyne\000000.bin
 # ...
 
-IMU_OUT_ROOT = r"D:\lidar_imu"    # where we will write simplified IMU files
+IMU_OUT_ROOT = os.getenv("KITTI_IMU_OUT_ROOT", r"D:\lidar_imu")    # where we will write simplified IMU files
 # target layout:
 # D:\lidar_imu\00\imu\000000.txt
 # D:\lidar_imu\01\imu\000000.txt

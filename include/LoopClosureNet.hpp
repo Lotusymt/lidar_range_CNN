@@ -1,6 +1,6 @@
 #pragma once
 
-#include "slam/Types.hpp"
+#include "Types.hpp"
 #include <torch/script.h>
 #include <string>
 

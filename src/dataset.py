@@ -5,14 +5,20 @@ import torch
 from torch.utils.data import Dataset
 from range_kitti import read_velodyne_bin, cloud_to_range_image
 
+# Configuration: Set via environment variable or use default
+KITTI_LIDAR_ROOT = os.getenv("KITTI_LIDAR_ROOT", r"D:\kitti_lidar")
+KITTI_POSES_ROOT = os.getenv("KITTI_POSES_ROOT", r"D:\data_odometry_poses\dataset")
+
 
 class KittiRangeDataset(Dataset):
     """
     Returns single range images from one KITTI sequence (e.g., 00).
     You can wrap this later to create pairs.
     """
-    def __init__(self, seq='00', H=64, W=1024, transform=None):
-        self.seq_dir = os.path.join("D:\kitti_lidar", seq, 'velodyne')
+    def __init__(self, seq='00', H=64, W=1024, transform=None, lidar_root=None):
+        if lidar_root is None:
+            lidar_root = KITTI_LIDAR_ROOT
+        self.seq_dir = os.path.join(lidar_root, seq, 'velodyne')
         self.files = sorted(glob.glob(os.path.join(self.seq_dir, '*.bin')))
         self.H = H
         self.W = W
@@ -43,7 +49,7 @@ from torch.utils.data import Dataset
 import os
 import numpy as np
 
-def load_kitti_positions(seq="00"):
+def load_kitti_positions(seq="00", poses_root=None):
     """
     Load KITTI Odometry poses and return camera positions (N, 3).
 
@@ -54,7 +60,9 @@ def load_kitti_positions(seq="00"):
     Returns:
         positions: np.ndarray of shape (N, 3)
     """
-    pose_file = os.path.join("D:\data_odometry_poses\dataset", "poses", f"{seq}.txt")  # pose file for this sequence
+    if poses_root is None:
+        poses_root = KITTI_POSES_ROOT
+    pose_file = os.path.join(poses_root, "poses", f"{seq}.txt")  # pose file for this sequence
     if not os.path.isfile(pose_file):
         raise FileNotFoundError(f"Pose file not found: {pose_file}")
 
@@ -90,8 +98,9 @@ class KittiPairDataset(Dataset):
     """
     def __init__(self, seq='00', H=64, W=1024,
                  pos_range=5, neg_gap=100, num_pairs=5000,
-                 min_neg_dist=15.0, use_pose_filter=True, max_neg_trials=20):
-        self.single = KittiRangeDataset(seq, H, W)   # underlying single-frame dataset
+                 min_neg_dist=15.0, use_pose_filter=True, max_neg_trials=20,
+                 lidar_root=None, poses_root=None):
+        self.single = KittiRangeDataset(seq, H, W, lidar_root=lidar_root)   # underlying single-frame dataset
         self.N = len(self.single)                              # total number of frames in this sequence
         self.pos_range = pos_range                             # how many frames ahead to consider as positive
         self.neg_gap = neg_gap                                 # minimal frame gap for candidate negatives
@@ -103,7 +112,7 @@ class KittiPairDataset(Dataset):
 
         if self.use_pose_filter:
             # Precompute camera positions from KITTI pose file
-            self.positions = load_kitti_positions(seq)   # shape (N, 3)
+            self.positions = load_kitti_positions(seq, poses_root=poses_root)   # shape (N, 3)
             # In KITTI Odometry, number of poses may be <= number of velodyne frames.
             # We will clamp indices to valid range later.
             self.num_pose = self.positions.shape[0]
@@ -171,47 +180,4 @@ class KittiPairDataset(Dataset):
         pair = torch.cat([img_i, img_j], dim=0)
 
         # return pair and label (float for BCE loss)
-        return pair, torch.tensor(label, dtype=torch.float32)
-
-    """
-    Pair dataset for loop-closure style classification.
-    Positive: frames within 'pos_range' frames.
-    Negative: frames further than 'neg_gap' frames away.
-    """
-    def __init__(self, seq='00', H=64, W=1024,
-                 pos_range=5, neg_gap=100, num_pairs=5000):
-        self.single = KittiRangeDataset(seq, H, W)
-        self.N = len(self.single)
-        self.pos_range = pos_range
-        self.neg_gap = neg_gap
-        self.num_pairs = num_pairs
-
-    def __len__(self):
-        return self.num_pairs
-
-    def __getitem__(self, _):
-        # randomly decide positive or negative
-        is_pos = random.random() < 0.5
-
-        i = random.randint(0, self.N - 1)
-
-        if is_pos:
-            # j is close to i in time
-            delta = random.randint(1, self.pos_range)
-            j = min(self.N - 1, i + delta)
-            label = 1
-        else:
-            # j is far in time -> likely different place
-            choices = list(range(0, max(0, i - self.neg_gap))) + \
-                      list(range(min(self.N - 1, i + self.neg_gap), self.N))
-            if len(choices) == 0:
-                # fallback: just pick random
-                j = random.randint(0, self.N - 1)
-            else:
-                j = random.choice(choices)
-            label = 0
-
-        img_i, _ = self.single[i]
-        img_j, _ = self.single[j]
-        pair = torch.cat([img_i, img_j], dim=0)  # shape (2, H, W)
         return pair, torch.tensor(label, dtype=torch.float32)

@@ -1,4 +1,4 @@
-#include "slam/LoopClosureDetector.hpp"
+#include "LoopClosureDetector.hpp"
 #include <algorithm>
 #include <cmath>
 
@@ -8,13 +8,23 @@ LoopClosureDetector::LoopClosureDetector(const std::string& model_path,
                                          float probability_threshold,
                                          int keyframe_interval,
                                          int min_separation,
-                                         int max_candidates)
+                                         int max_candidates,
+                                         bool use_motion_based,
+                                         double min_translation,
+                                         double min_rotation)
     : net_(std::make_unique<LoopClosureNet>(model_path))
     , probability_threshold_(probability_threshold)
     , keyframe_interval_(keyframe_interval)
     , min_separation_(min_separation)
     , max_candidates_(max_candidates)
+    , use_motion_based_(use_motion_based)
+    , min_translation_(min_translation)
+    , min_rotation_(min_rotation)
+    , last_keyframe_frame_id_(-1)
 {
+    // Initialize last keyframe pose to identity
+    last_keyframe_pose_.t = Eigen::Vector3d::Zero();
+    last_keyframe_pose_.q = Eigen::Quaterniond::Identity();
 }
 
 std::vector<LoopClosureCandidate> LoopClosureDetector::processFrame(
@@ -32,8 +42,54 @@ std::vector<LoopClosureCandidate> LoopClosureDetector::processFrame(
     current_range_img.timestamp = scan.timestamp;
 
     // Decide if this should be a keyframe
-    bool is_keyframe = (current_frame_id % keyframe_interval_ == 0) || 
-                       (keyframes_.empty());
+    bool is_keyframe = false;
+    
+    if (keyframes_.empty()) {
+        // Always make first frame a keyframe
+        is_keyframe = true;
+        last_keyframe_pose_ = current_pose;
+        last_keyframe_frame_id_ = current_frame_id;
+    } else if (use_motion_based_) {
+        // Motion-based keyframe selection
+        // Creates keyframes when the robot has moved significantly (translation or rotation)
+        // This adapts to motion: more keyframes when moving fast, fewer when stationary
+        
+        // Compute relative transform from last keyframe to current pose
+        Eigen::Quaterniond q_rel = last_keyframe_pose_.q.conjugate() * current_pose.q;
+        Eigen::Vector3d t_rel = last_keyframe_pose_.q.conjugate() * (current_pose.t - last_keyframe_pose_.t);
+        
+        // Compute translation distance (meters)
+        double translation_dist = t_rel.norm();
+        
+        // Compute rotation angle (radians) from quaternion
+        // q = [cos(θ/2), sin(θ/2) * axis], so angle = 2 * acos(|w|)
+        double rotation_angle = 2.0 * std::acos(std::min(1.0, std::abs(q_rel.w())));
+        
+        // Check if motion exceeds thresholds
+        bool translation_exceeded = (translation_dist > min_translation_);
+        bool rotation_exceeded = (rotation_angle > min_rotation_);
+        
+        // Also enforce minimum interval (don't create keyframes too frequently)
+        // This prevents creating keyframes every frame when moving very fast
+        int frames_since_keyframe = current_frame_id - last_keyframe_frame_id_;
+        bool min_interval_met = (frames_since_keyframe >= keyframe_interval_);
+        
+        // Create keyframe if:
+        //  1. Motion is significant (translation OR rotation exceeds threshold)
+        //  2. Minimum interval constraint is met (prevents too frequent keyframes)
+        if ((translation_exceeded || rotation_exceeded) && min_interval_met) {
+            is_keyframe = true;
+            last_keyframe_pose_ = current_pose;
+            last_keyframe_frame_id_ = current_frame_id;
+        }
+    } else {
+        // Fallback to interval-based keyframe selection
+        is_keyframe = (current_frame_id % keyframe_interval_ == 0);
+        if (is_keyframe) {
+            last_keyframe_pose_ = current_pose;
+            last_keyframe_frame_id_ = current_frame_id;
+        }
+    }
 
     if (!is_keyframe) {
         // Not a keyframe, no loop closure detection
@@ -98,7 +154,8 @@ std::vector<LoopClosureCandidate> LoopClosureDetector::processFrame(
         // T_past_to_curr = T_world_to_curr * T_past_to_world
         // T_past_to_world = inv(T_world_to_past)
         Eigen::Quaterniond q_past_to_world = past_pose.q.conjugate();
-        Eigen::Vector3d t_past_to_world = -q_past_to_world * past_pose.t;
+        // Inverse translation: t_inv = -R^T * t = -q.conjugate() * t
+        Eigen::Vector3d t_past_to_world = -(q_past_to_world * past_pose.t);
         
         // T_world_to_curr = current_pose
         // T_past_to_curr = T_world_to_curr * T_past_to_world
@@ -127,6 +184,16 @@ int LoopClosureDetector::getKeyframeNodeIndex(int frame_id) const
         }
     }
     return -1;
+}
+
+std::vector<std::pair<int, int>> LoopClosureDetector::getKeyframeIndices() const
+{
+    std::vector<std::pair<int, int>> result;
+    result.reserve(keyframes_.size());
+    for (const auto& kf : keyframes_) {
+        result.push_back({kf.frame_id, kf.node_index});
+    }
+    return result;
 }
 
 } // namespace slam

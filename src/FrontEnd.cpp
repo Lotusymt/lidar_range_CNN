@@ -14,7 +14,7 @@ namespace {
                           float voxel_leaf_size,
                           float max_range)
     {
-        auto cloud = boost::make_shared<pcl::PointCloud<pcl::PointXYZ>>();                  // create empty point cloud
+        auto cloud = std::make_shared<pcl::PointCloud<pcl::PointXYZ>>();                  // create empty point cloud
     
         cloud->reserve(points.size());                                     // pre-allocate for speed
     
@@ -130,105 +130,107 @@ PoseDelta FrontEnd::icpBetweenScans(const LidarScan& prev,
     const LidarScan& curr,
     const Pose3D& initial_guess) const
 {
-PoseDelta result;                                                  // will hold final relative pose + info
+    PoseDelta result;                                                  // will hold final relative pose + info
 
-// -----------------------------
-// 1) Build and downsample point clouds
-// -----------------------------
+    // -----------------------------
+    // 1) Build and downsample point clouds
+    // -----------------------------
 
-const float voxel_leaf_size = 0.2f;                                // 0.2 m voxel grid
-const float max_range = 60.0f;                                     // ignore points beyond 60 m
+    const float voxel_leaf_size = 0.2f;                                // 0.2 m voxel grid
+    const float max_range = 60.0f;                                     // ignore points beyond 60 m
 
-auto prev_cloud = buildDownsampledCloud(prev.points,
-            voxel_leaf_size,
-            max_range);                // downsampled previous scan
-auto curr_cloud = buildDownsampledCloud(curr.points,
-            voxel_leaf_size,
-            max_range);                // downsampled current scan
+    auto prev_cloud = buildDownsampledCloud(prev.points,
+                voxel_leaf_size,
+                max_range);                // downsampled previous scan
+    auto curr_cloud = buildDownsampledCloud(curr.points,
+                voxel_leaf_size,
+                max_range);                // downsampled current scan
 
-if (prev_cloud->size() < 50 || curr_cloud->size() < 50) {          // if too few points, ICP is unreliable
-Pose3D delta;                                                  // fall back to IMU prior
-delta.q = initial_guess.q;
-delta.t = initial_guess.t;
+    if (prev_cloud->size() < 50 || curr_cloud->size() < 50) {          // if too few points, ICP is unreliable
+        Pose3D delta;                                                  // fall back to IMU prior
+        delta.q = initial_guess.q;
+        delta.t = initial_guess.t;
 
-result.T_prev_to_curr = delta;
-result.info = Eigen::Matrix<double, 6, 6>::Identity();         // low-confidence identity info
-return result;                                                 // return fallback
-}
+        result.T_prev_to_curr = delta;
+        result.info = Eigen::Matrix<double, 6, 6>::Identity();         // low-confidence identity info
+        //add log warning
+        std::cerr << "WARNING: Too few points, falling back to IMU prior" << std::endl;
+        return result;                                                 // return fallback
+    }
 
-// -----------------------------
-// 2) Build initial guess transform (Eigen Pose3D -> 4x4 matrix)
-// -----------------------------
+    // -----------------------------
+    // 2) Build initial guess transform (Eigen Pose3D -> 4x4 matrix)
+    // -----------------------------
 
-Eigen::Matrix4d guess_d = Eigen::Matrix4d::Identity();             // start with identity 4x4
-guess_d.block<3, 3>(0, 0) = initial_guess.q.toRotationMatrix();    // fill rotation block
-guess_d.block<3, 1>(0, 3) = initial_guess.t;                       // fill translation block
+    Eigen::Matrix4d guess_d = Eigen::Matrix4d::Identity();             // start with identity 4x4
+    guess_d.block<3, 3>(0, 0) = initial_guess.q.toRotationMatrix();    // fill rotation block
+    guess_d.block<3, 1>(0, 3) = initial_guess.t;                       // fill translation block
 
-Eigen::Matrix4f guess = guess_d.cast<float>();                     // cast to float for PCL
+    Eigen::Matrix4f guess = guess_d.cast<float>();                     // cast to float for PCL
 
-// -----------------------------
-// 3) Configure and run ICP
-// -----------------------------
+    // -----------------------------
+    // 3) Configure and run ICP
+    // -----------------------------
 
-pcl::IterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> icp;      // ICP object
-icp.setInputSource(curr_cloud);                                    // "source" = current frame
-icp.setInputTarget(prev_cloud);                                    // "target" = previous frame
+    pcl::IterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> icp;      // ICP object
+    icp.setInputSource(curr_cloud);                                    // "source" = current frame
+    icp.setInputTarget(prev_cloud);                                    // "target" = previous frame
 
-icp.setMaxCorrespondenceDistance(30.0f);                           // max neighbor distance (meters)
-icp.setMaximumIterations(30);                                      // max ICP iterations
-icp.setTransformationEpsilon(1e-6);                                // stop if transform change is tiny
-icp.setEuclideanFitnessEpsilon(1e-5);                              // stop if error improvement is tiny
+    icp.setMaxCorrespondenceDistance(30.0f);                           // max neighbor distance (meters)
+    icp.setMaximumIterations(30);                                      // max ICP iterations
+    icp.setTransformationEpsilon(1e-6);                                // stop if transform change is tiny
+    icp.setEuclideanFitnessEpsilon(1e-5);                              // stop if error improvement is tiny
 
-pcl::PointCloud<pcl::PointXYZ> aligned;                            // will hold transformed current cloud
+    pcl::PointCloud<pcl::PointXYZ> aligned;                            // will hold transformed current cloud
 
-icp.align(aligned, guess);                                         // run ICP with initial guess
+    icp.align(aligned, guess);                                         // run ICP with initial guess
 
-if (!icp.hasConverged()) {                                         // if ICP failed to converge
-std::cerr << "WARNING: ICP failed to converge, falling back to IMU prior" << std::endl;
-Pose3D delta;                                                  // fall back to IMU prior again
-delta.q = initial_guess.q;
-delta.t = initial_guess.t;
+    if (!icp.hasConverged()) {                                         // if ICP failed to converge
+    std::cerr << "WARNING: ICP failed to converge, falling back to IMU prior" << std::endl;
+    Pose3D delta;                                                  // fall back to IMU prior again
+    delta.q = initial_guess.q;
+    delta.t = initial_guess.t;
 
-result.T_prev_to_curr = delta;
-result.info = Eigen::Matrix<double, 6, 6>::Identity();
-return result;                                                 // return fallback
-}
+    result.T_prev_to_curr = delta;
+    result.info = Eigen::Matrix<double, 6, 6>::Identity();
+    return result;                                                 // return fallback
+    }
 
-// -----------------------------
-// 4) Extract final transform and convert back to Pose3D
-// -----------------------------
+    // -----------------------------
+    // 4) Extract final transform and convert back to Pose3D
+    // -----------------------------
 
-Eigen::Matrix4f T_icp_f = icp.getFinalTransformation();            // ICP result (float 4x4)
-Eigen::Matrix4d T_icp = T_icp_f.cast<double>();                    // convert to double for consistency
+    Eigen::Matrix4f T_icp_f = icp.getFinalTransformation();            // ICP result (float 4x4)
+    Eigen::Matrix4d T_icp = T_icp_f.cast<double>();                    // convert to double for consistency
 
-Eigen::Matrix3d R = T_icp.block<3, 3>(0, 0);                       // rotation block
-Eigen::Vector3d t = T_icp.block<3, 1>(0, 3);                       // translation block
+    Eigen::Matrix3d R = T_icp.block<3, 3>(0, 0);                       // rotation block
+    Eigen::Vector3d t = T_icp.block<3, 1>(0, 3);                       // translation block
 
-Pose3D delta;
-delta.q = Eigen::Quaterniond(R);                                   // convert rotation matrix to quaternion
-delta.t = t;                                                       // set translation
+    Pose3D delta;
+    delta.q = Eigen::Quaterniond(R);                                   // convert rotation matrix to quaternion
+    delta.t = t;                                                       // set translation
 
-result.T_prev_to_curr = delta;                                     // store relative pose
+    result.T_prev_to_curr = delta;                                     // store relative pose
 
-// -----------------------------
-// 5) Build an information matrix from ICP fitness (simple heuristic)
-// -----------------------------
+    // -----------------------------
+    // 5) Build an information matrix from ICP fitness (simple heuristic)
+    // -----------------------------
 
-double fitness = icp.getFitnessScore();                            // mean squared error (lower = better)
-double weight = 1.0 / std::max(fitness, 1e-4);                     // invert error to get a weight
+    double fitness = icp.getFitnessScore();                            // mean squared error (lower = better)
+    double weight = 1.0 / std::max(fitness, 1e-4);                     // invert error to get a weight
 
-Eigen::Matrix<double, 6, 6> info = Eigen::Matrix<double, 6, 6>::Zero();
-info(0, 0) = weight;                                               // rot x
-info(1, 1) = weight;                                               // rot y
-info(2, 2) = weight;                                               // rot z
-info(3, 3) = weight;                                               // trans x
-info(4, 4) = weight;                                               // trans y
-info(5, 5) = weight;                                               // trans z
-// simple isotropic info; you can tune rotation vs translation scaling later
+    Eigen::Matrix<double, 6, 6> info = Eigen::Matrix<double, 6, 6>::Zero();
+    info(0, 0) = weight;                                               // rot x
+    info(1, 1) = weight;                                               // rot y
+    info(2, 2) = weight;                                               // rot z
+    info(3, 3) = weight;                                               // trans x
+    info(4, 4) = weight;                                               // trans y
+    info(5, 5) = weight;                                               // trans z
+    // simple isotropic info; you can tune rotation vs translation scaling later
 
-result.info = info;                                                // store information matrix
+    result.info = info;                                                // store information matrix
 
-return result;                                                     // return final ICP-based PoseDelta
+    return result;                                                     // return final ICP-based PoseDelta
 }
 
 
